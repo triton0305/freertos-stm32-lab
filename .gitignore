@@ -1,0 +1,30 @@
+# Build output
+/build/
+/build-*/
+/cmake-build-*/
+*.o
+*.obj
+*.a
+*.elf
+*.bin
+*.hex
+*.map
+*.exe
+
+# Local CMake configuration
+/CMakeUserPresets.json
+/compile_commands.json
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment
+.env
+.env.*
+!.env.example
