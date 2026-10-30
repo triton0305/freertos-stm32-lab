@@ -1,20 +1,164 @@
-# STM32 FreeRTOS Core SW Lab
+# STM32 FreeRTOS Lab
 
-NUCLEO-F411RE(STM32F411RET6), C11, FreeRTOS 실습. 개발·빌드·Windows 실행의 시작점은 WSL2입니다. Equipment Controller 소스/빌드에는 의존하지 않습니다. 자동 Flash, Git commit/push는 수행하지 않습니다.
+STM32F411RE에서 FreeRTOS 기반 LED 제어와 버튼 입력을 구현했습니다. 명령 처리, 제어, 상태 생성, UART 송신을 네 개의 Task로 분리하고 Queue, Mutex, Task Notification으로 연결했습니다. Windows Monitor·CLI를 통해 보드를 제어하고 Task 상태와 UART 이벤트, 주기 실행을 관찰했습니다.
 
-**2026-10-29 검증:** ARM ELF/BIN/MAP 생성 **BUILD VERIFIED**. Linux 테스트 3/3, Windows 테스트 4/4 및 실제 EXE 실행 **HOST VERIFIED**. Windows COM7 열기/기존 펌웨어 데이터 수신 확인. **새 펌웨어 HW VERIFIED는 아직 없음.** 현재 보드에서는 `DOOR:OPEN`, `ESTOP:OFF` 같은 기존 펌웨어 출력이 관찰되었습니다. 새 RTOS 이미지가 실행되고 있다는 증거가 아닙니다.
+**NUCLEO-F411RE / Cortex-M4F / C11 / FreeRTOS V11.3.1 / Queue · Mutex · Task Notification / UART · EXTI / Windows TCP Monitor · CLI**
 
-## 빌드: WSL
+## 프로젝트 명세
 
-필수 도구: CMake >=3.22, Ninja, Git, GCC, ARM GCC/newlib, MinGW-w64. Ubuntu 설치 예:
+| 문서 | 내용 |
+|---|---|
+| [01 · 구현·검증 명세](<docs/specs/01_first_spec_(implementation_validation).md>) | 초기 펌웨어·Host 구현 요구사항과 검증 기준 |
+| [02 · 관련 Yocto 이미지 명세](<docs/specs/02_second_spec_(yocto_uart_gpio8_image).md>) | 별도 Raspberry Pi 프로젝트의 UART·GPIO 이미지 통합 요구사항 |
+| [03 · 포트폴리오 정리 명세](<docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md>) | README, 검증 기록, 시연 자료 및 GitHub 정리 기준 |
+
+명세 원문과 현재 구현·검증 결과를 함께 보관했습니다. 현재 상태는 아래 본문과 [구현·검증 기록](IMPLEMENTATION_REPORT.md)에 정리했습니다.
+
+## 핵심 구현과 성과
+
+- **역할별 Task 4개:** Command(4), Control(3), Monitor(2), UartTx(1)로 분리했습니다.
+- **명령·진단 경로 분리:** 제어 요청은 Queue로 전달하고, UART 응답(RSP)을 상태·이벤트(STAT/EVT)보다 우선 송신하도록 구성했습니다.
+- **ISR와 공유 상태 처리:** UART·버튼 ISR은 Task에 알리고, `LabState`는 짧은 Mutex 구간에서 복사·갱신했습니다.
+- **실장비 제어:** LED ON/OFF/AUTO, 토글 간격 변경, 버튼 이벤트, CLI 두 개의 교차 제어·상태 조회를 확인했습니다.
+- **회귀 검증:** Linux 3개·Windows 5개 테스트를 통과하고, 수정본 보드에서 정상 명령과 오류 입력 후 상태를 확인했습니다.
+
+## 실장비 시연
+
+<!-- GIF 삽입 위치: docs/assets/auto_demo.gif / 사용자 업로드 후 연결 -->
+
+AUTO 모드에서 토글 간격을 **1000 → 500 → 100ms**로 변경했습니다. `rate`는 LED가 ON↔OFF로 전환되는 간격이며, 1000ms 설정의 ON/OFF 한 주기는 2000ms입니다.
+
+▶ [전체 동작 영상 — YouTube](https://youtu.be/3qcbrseBkAc)
+
+## 시스템 구성
+
+| 구성요소 | 실행·조작 위치 | 역할 |
+|---|---|---|
+| `cli.exe` | Windows PowerShell | 사용자 명령 입력, 요청 ID 관리, 응답 표시 |
+| `monitor.exe` | WSL2 Ubuntu 터미널에서 WSL Interop으로 실행 | Windows COM 통신, TCP 요청 중계, 상태·이벤트 및 Timing 출력 |
+| FreeRTOS 펌웨어 | NUCLEO-F411RE | Task 실행, LED·버튼·UART 처리 |
+
+통신 경로는 **CLI ↔ TCP `127.0.0.1:19006` ↔ Monitor ↔ ST-LINK VCP ↔ STM32 USART2**입니다. Monitor와 CLI는 Windows 네이티브 프로그램이며, Monitor는 WSL 터미널에서 실행했습니다.
+
+| 보드 설정 | 값 |
+|---|---|
+| MCU / 클럭 | STM32F411RET6 / HSI 16MHz → PLL 84MHz |
+| UART | USART2, 115200 8N1, PA2 TX / PA3 RX |
+| LED / 버튼 | LD2 PA5 / B1 PC13 active-low |
+| RTOS / HAL 시간 기준 | SysTick 1000Hz / TIM5 1ms timebase |
+| 검증 환경의 VCP | Windows COM7 |
+
+## Task 구성과 설계
+
+### Task와 데이터 흐름
+
+| Task | Priority | Stack | 역할·대기 방식 |
+|---|---:|---:|---|
+| Command | 4 | 512 words | RX ring 소비, 명령 파싱·조회, 제어 요청 / RX Notification 최대 50ms 대기 |
+| Control | 3 | 512 words | LED·상태 갱신, AUTO deadline, 버튼 처리 / control queue 최대 10ms 대기 |
+| Monitor | 2 | 512 words | 1초 STAT 생성 / `vTaskDelayUntil` |
+| UartTx | 1 | 512 words | UART 송신 전담 / log queue 최대 5ms 대기, 송신 timeout 40ms |
+| Idle | 0 | 128 words | 커널 유휴 처리 |
+
+Application Task는 4개, Idle 포함 총 5개입니다. Timer daemon은 비활성화했습니다. `tasks`의 `X/R/B/S`는 Running/Ready/Blocked/Suspended이며, Queue·Notification·주기를 기다리는 Task는 정상적으로 `B` 상태를 보입니다. Stack watermark는 최소 잔여 32-bit words로 표시합니다.
+
+```mermaid
+flowchart TD
+    RX["USART2 ISR · RX ring"] --> CMD["Command"]
+    CMD --> CQ["control queue"]
+    CQ --> CTRL["Control"]
+    BTN["B1 EXTI · Notification"] --> CTRL
+    CMD --> RSP["RSP queue"]
+    CTRL --> RSP
+    CTRL --> LOG["Log queue · EVT"]
+    MON["Monitor · 1초 STAT"] --> LOG
+    RSP --> TX["UartTx"]
+    LOG --> TX
+```
+
+### 통신과 동기화
+
+| 객체 | 용량 | 생산자 → 소비자 | 처리 정책 |
+|---|---:|---|---|
+| UART RX ring | 256byte 배열 / 255byte 유효 | ISR → Command | 수신 유실 시 backlog 폐기, 다음 LF까지 재동기화 |
+| control queue | 8개 | Command → Control | 포화 시 `ERR control_queue_full`, `cmddrop` 증가 |
+| RSP queue | 8 × 320byte | Command·Control → UartTx | 최대 20ms enqueue 대기, 포화 시 `rspdrop` 증가 |
+| log queue | 12 × 320byte | Control·Monitor → UartTx | EVT·STAT FIFO, 포화 시 `logdrop` 증가 |
+| state mutex | 1개 | Control 갱신 / Command·Monitor 조회 | `LabState` 복사·갱신 구간 보호 |
+
+UART 송신을 UartTx에 집중해 Command와 Control이 직접 polling 송신을 수행하는 시간을 분리했습니다. UartTx는 RSP를 먼저 확인하며, 이미 진행 중인 Log 송신은 완료한 뒤 다음 프레임을 선택합니다. Monitor를 UartTx보다 높은 우선순위로 두고, Command는 RX 64byte마다 1ms 양보하도록 구성했습니다.
+
+`LabState`는 Control이 갱신하고 Command·Monitor가 snapshot을 읽습니다. Mutex는 짧은 메모리 복사·갱신 동안 보유하며 UART 송신 전에 해제합니다. FreeRTOS Mutex의 Priority Inheritance 지원을 사용하도록 설정했습니다.
+
+Monitor는 CLI별 local ID를 UART global ID로 바꾸고, 응답을 원래 CLI ID로 복원합니다. 최대 8개 CLI가 연결되며 client당 요청 1개를 처리합니다. Monitor 요청 timeout은 5초, CLI 응답 대기는 7초입니다. 연결 해제·재접속과 MCU boot 이벤트에 맞춰 pending 요청을 정리합니다.
+
+UART는 LF 종료 ASCII 프레임을 사용합니다. 명령은 `CMD <id> ...`, 응답은 `RSP <id> OK/ERR ...`, 비동기 출력은 `STAT`·`EVT`로 구분했습니다. HELP도 UART에서는 한 줄로 전달하고 CLI에서 명령별 줄바꿈으로 표시합니다. 입력은 최대 127자, 출력은 최대 318자+LF이며 부분 수신과 긴 입력의 LF 복구를 처리합니다.
+
+### 시간 제어와 설정 관리
+
+AUTO 진입 시 LED를 OFF로 초기화하고 한 토글 간격 뒤 ON으로 전환합니다. 다음 deadline은 이전 목표 시점에서 증가시켜 phase를 유지하고, 실행이 늦어진 slot은 건너뛰어 `missed`로 집계합니다. `rate` 변경 시에는 현재 시점에서 새 deadline을 시작합니다.
+
+Monitor는 `vTaskDelayUntil`로 1초 release를 유지하고, 전체 주기를 놓치면 지난 release를 건너뜁니다. uint32 tick 차이로 wraparound를 처리하며 uptime은 약 49.7일에 순환합니다. B1은 양 edge EXTI로 알리고 Control이 GPIO level의 50ms 안정화를 판정합니다. 안정된 해제 이후 다음 입력을 받도록 구성했습니다.
+
+`App/app_config.h`에 Task 우선순위·Stack, Queue 깊이, UART 버퍼, LED 주기, debounce, 상태 주기, 대기·timeout을 모았습니다. 단위가 드러나는 이름과 컴파일 타임 검사로 설정 관계를 확인합니다. 커널 설정은 `Core/FreeRTOSConfig.h`, MCU 핀·클럭·주변장치는 `Core/board.c`, Windows COM·TCP 옵션은 Host 계층에서 관리합니다.
+
+## 실행·검증 결과
+
+### 두 CLI의 교차 제어와 상태 조회
+
+PowerShell CLI 두 개에서 PING 응답과 STATUS/TASKS/QUEUE 조회를 확인했습니다. 위쪽 CLI에서 `led off`로 변경한 뒤 아래쪽 CLI에서도 `led=OFF mode=OFF`를 조회했습니다. 해당 화면에서 UART RX/TX 오류와 Queue drop은 0이었습니다.
+
+![두 CLI의 교차 제어와 상태 조회](docs/assets/two_cli.png)
+
+### 버튼 입력과 Monitor 이벤트
+
+B1 입력 후 `EVT button pressed`를 수신하고, 주기 STATUS의 `buttons`가 **6 → 7 → 8**로 증가하는 것을 확인했습니다. 아래 화면은 버튼 입력과 이벤트·상태 출력을 함께 기록한 장면입니다.
+
+![버튼 입력과 Monitor 이벤트](docs/assets/button_monitor.png)
+
+### 검증 요약
+
+2026-10-30 수정본의 빌드·회귀 검증 기록과 보드 실습 결과입니다. 시험 환경과 초기 이력, CLI 회귀 검증 사진은 [구현·검증 기록](IMPLEMENTATION_REPORT.md)에 정리했습니다.
+
+| 항목 | 결과 |
+|---|---|
+| ARM Debug / Windows Monitor·CLI 빌드 | PASS |
+| Linux / Windows CTest | 3/3 / 5/5 PASS |
+| Rate / Firmware Dispatch·HELP | 31개 사례 / 386 checks 통과 |
+| Host Protocol / 다중 CLI / CLI 표시 | 40 / 34 / 6 checks 통과 |
+| 실장비 기능 | Flash verify, Task 실행, UART, LED·버튼, 오류 명령 후 정상 조회, 두 CLI 연결 확인 |
+| 정상 기능 시험의 통신·큐 통계 | UART RX/TX 오류 0, Queue drop 0 관찰 |
+
+Timing은 **Windows QPC 기반 Host 수신 시각과 UART 프레임의 MCU timestamp**를 비교했습니다. 아래 표는 같은 설정을 유지한 별도 측정 기록입니다.
+
+| 대상 | 설정 간격 | Host 수신 평균 간격 | 간격 수 | Host 경과 / MCU timestamp 증가 |
+|---|---:|---:|---:|---:|
+| LED AUTO 이벤트 | 500ms | 494.200ms | 30 | 14,826 / 15,000ms |
+| STATUS | 1000ms | 989.786ms | 14 | 13,857 / 14,000ms |
+
+두 시간 기준 사이에서 약 1% 차이를 관찰했으며, MCU 클럭과 수신 지연을 구분하는 추가 분석 과제로 남겼습니다.
+
+| 메모리 지표 | 수정본 |
+|---|---:|
+| Flash / 링크 RAM | 32,132 / 36,680 bytes |
+| 보드 실행 중 Free Heap | 16,680 bytes |
+
+링크 RAM은 정적 배치와 예약 공간을 포함하고, Free Heap은 실행 중 RTOS heap의 잔여량입니다.
+
+## 빌드·실행
+
+### WSL 빌드
+
+필수 도구는 CMake 3.22 이상, Ninja, Git, GCC, ARM GCC/newlib, MinGW-w64입니다.
 
 ```bash
 sudo apt-get update
 sudo apt-get install cmake ninja-build git gcc gcc-arm-none-eabi libnewlib-arm-none-eabi gcc-mingw-w64-x86-64
-cd ~/projects/stm32-freertos-lab
+
+git clone https://github.com/triton0305/freertos-stm32-lab.git
+cd freertos-stm32-lab
 cmake --preset Debug
 cmake --build --preset Debug
-arm-none-eabi-size build/Debug/stm32-freertos-lab.elf
 ./scripts/build-windows.sh
 cmake -S host -B build/host-linux -G Ninja
 cmake --build build/host-linux
@@ -22,191 +166,86 @@ ctest --test-dir build/host-linux --output-on-failure
 ctest --test-dir build/host-win --output-on-failure
 ```
 
-Windows 테스트는 WSL Interop이 켜져 있어야 실행됩니다. 본 환경에서 EXE 직접 실행과 CTest 실행을 확인했습니다. `build-windows.sh`는 MinGW가 없으면 Ubuntu 패키지를 `build/toolchain-debs/`에 다운로드하고 `build/mingw/`에 풀어 사용합니다. sudo 없이 동작하며 시스템 설치를 변경하지 않습니다. apt 다운로드 실패는 즉시 종료됩니다. 일반 MinGW 설치 시 직접 빌드도 가능합니다:
+공식 의존성은 첫 configure에서 FetchContent로 내려받고 커밋·tracked 수정 여부를 확인합니다. MinGW가 없으면 Windows 빌드 스크립트는 Ubuntu 패키지를 `build/` 아래에 내려받아 추출합니다. Windows 테스트 EXE 실행에는 WSL Interop을 사용합니다.
+
+| 의존성 | 버전 | 고정 커밋 |
+|---|---|---|
+| ARM CMSIS | 5.9.0 | `2b7495b8535bdcb306dac29b9ded4cfb679d7e5c` |
+| ST CMSIS Device F4 | v2.6.9 | `3b64b7b0b546cefe84f13c65508126eea58b97d8` |
+| STM32F4 HAL | v1.8.3 | `c2e1406d7ea4b73aa42b98ddeb75a8670b1a5a16` |
+| FreeRTOS Kernel | V11.3.1 | `3a22924e0a9ddbbc8b0758881c33b3422a5cc20d` |
+
+### 보드에 수동 Flash
+
+보드와 ST-LINK 연결을 확인한 뒤 실행합니다. 아래 명령은 보드의 현재 펌웨어를 교체합니다. WSL에 ST-LINK가 전달돼 있고 `st-flash`가 설치된 환경에서 저장소 루트 기준으로 실행합니다.
 
 ```bash
-cmake -S host -B build/host-win -G Ninja -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/mingw-w64.cmake"
-cmake --build build/host-win
+st-flash --reset write build/Debug/stm32-freertos-lab.bin 0x08000000
 ```
 
-컴파일러 경로가 달라지면 해당 Host 빌드 디렉터리를 새로 지정하세요. 이동/Clone 시 `build/`는 복사하지 말고 재생성합니다.
-
-| 공식 의존성 | 고정 커밋 |
-|---|---|
-| ARM CMSIS 5.9.0 | `2b7495b8535bdcb306dac29b9ded4cfb679d7e5c` |
-| ST CMSIS Device F4 v2.6.9 | `3b64b7b0b546cefe84f13c65508126eea58b97d8` |
-| STM32F4 HAL v1.8.3 | `c2e1406d7ea4b73aa42b98ddeb75a8670b1a5a16` |
-| FreeRTOS Kernel V11.3.1 | `3a22924e0a9ddbbc8b0758881c33b3422a5cc20d` |
-
-CMake FetchContent가 공식 GitHub 저장소에서 다운로드합니다. configure에서 실제 HEAD 및 tracked 수정 여부를 검사하며, 로컬 override도 같은 핀을 요구합니다. 최초 빌드에는 인터넷이 필요합니다. 다운로드 실패 시 configure가 실패하므로 오류 로그의 저장소/네트워크 원인을 해결 후 재시도하세요. 잘못된 핀을 넣는 negative test에서 실제 configure 실패를 확인했습니다. Equipment Controller의 HAL/CMSIS 경로를 사용하지 않습니다.
-
-## WSL 터미널 두 개에서 실행
-
-Terminal 1:
-
-```bash
-cd ~/projects/stm32-freertos-lab
-./build/host-win/monitor.exe --serial COM7 --baud 115200 --port 19006
-```
-
-Terminal 2:
-
-```bash
-cd ~/projects/stm32-freertos-lab
-./build/host-win/cli.exe --host 127.0.0.1 --port 19006
-```
-
-Windows EXE가 **Windows COM7**을 엽니다. `/dev/ttyACM0`과 연결하지 않습니다. Monitor만 COM을 독점하고 TCP 서버는 `127.0.0.1`에만 바인딩합니다. CLI는 최대 8개 동시 접속 가능하며 `exit` 후 재접속할 수 있습니다. Monitor가 종료되면 입력 대기 중인 CLI도 종료됩니다. Monitor 종료는 Ctrl+C입니다.
-
-Interop 문제 발생 시 `/proc/sys/fs/binfmt_misc/WSLInterop`과 `/mnt/c/Windows/System32/cmd.exe /c ver`를 확인합니다. UNC 실행이 제한된 환경에서는 두 EXE를 `/mnt/c/Users/<사용자>/stm32-lab/`에 복사하고 **WSL에서** 그 경로의 EXE를 실행할 수 있습니다. Interop 자체가 비활성이면 WSL 설정 복구가 필요합니다. Python, GUI UART 프로그램, 별도 Bridge 터미널은 필요하지 않습니다.
-
-| CLI | 기능 |
-|---|---|
-| `help`, `ping` | 목록, PONG |
-| `status` | uptime, LED/mode/rate, 버튼, task 수, heap/minheap, protocol/UART/TX/drop 통계, 버튼 notification 수 |
-| `tasks` | Command/Control/Monitor/UartTx/Idle 상태·우선순위·Stack watermark |
-| `queue` | control/RSP/log 깊이·용량·drop |
-| `led on`, `led off`, `led auto` | LD2 제어 |
-| `rate N` | 100~5000ms, 기본 500ms; 범위 밖은 ERR |
-| `exit` | 해당 CLI 종료 |
-
-## Task 및 소유권
-
-Application Task **4개**, Idle 포함 **총 5개**. Timer daemon은 비활성화되어 있습니다.
-
-| Task (실제 이름) | 우선순위 | Stack(words) | 소유/역할 | 정상 Blocking |
-|---|---:|---:|---|---|
-| Command | 4 | 512 | RX ring 소비, line parser, query, control queue 생산 | RX notification 최대 50ms; 64byte마다 1ms 양보 |
-| Control | 3 | 512 | LED/GPIO 출력, AUTO deadline, 버튼 debounce, LabState 유일 writer | control queue 최대 10ms, TX enqueue 최대 20ms |
-| Monitor | 2 | 512 | 1초 STAT 생성 | `vTaskDelayUntil(1000ms)` |
-| UartTx | 1 | 512 | USART2 송신 단독 소유 | log queue 최대 5ms, UART timeout 40ms |
-| IDLE | 0 | 128 | 커널 유휴 처리 | 커널 관리 |
-
-Monitor를 polling UART TX보다 높게 두어 UART backlog가 1초 진단 Task를 굶기지 않도록 했습니다. Control/Command는 긴 UART 전송을 하지 않습니다. Mutex priority inheritance가 켜져 있고 LabState 복사/갱신에만 잠금을 사용합니다. 디버그 통계는 각 시점의 관측치이며 여러 Task 전체의 원자적 snapshot은 아닙니다.
-
-| 객체 | 용량 | 생산자 → 소비자 | 포화 정책 |
-|---|---:|---|---|
-| RX ring | 255 유효 byte | USART2 ISR → Command | overflow/error 카운트, unread backlog 폐기, 실제 다음 LF까지 재동기화 |
-| control queue | 8 | Command → Control | 대기 없이 ERR control_queue_full, cmddrop++ |
-| RSP queue | 8 × 320byte | Command/Control → UartTx | 최대 20ms 대기 후 rspdrop++; Host 5초 timeout |
-| log queue | 12 × 320byte | Control/Monitor → UartTx | EVT/STAT 동등 FIFO, 대기 없이 logdrop++ |
-| state mutex | 1 | Control writer, Command/Monitor reader | 짧은 복사/갱신만; UART 출력 중 보유 금지 |
-
-RSP가 log보다 우선합니다. 이미 시작한 log 전송은 선점하지 않으며 log 대기는 최대 5ms입니다. 응답 보장은 무한하지 않습니다. 혼잡 시 RSP도 드롭될 수 있으므로 새 요청으로 재시도하며, timeout된 제어 명령이 실행되었을 가능성도 고려해야 합니다.
-
-`tasks` 상태: X=RUNNING, R=READY(실행 자격이 있지만 CPU 대기), B=BLOCKED(Queue/Notification/Delay 대기), S=SUSPENDED, D=DELETED. **B는 정상 상태이며 fault 표시가 아닙니다.** Command 조회 중 Command가 X로 보이는 것은 정상입니다. Stack watermark는 최소 남은 **32-bit words**이며 bytes로 보려면 4를 곱합니다.
-
-## FreeRTOS API 실제 사용
-
-| API | 사용 목적 |
-|---|---|
-| `xTaskCreate`, `vTaskStartScheduler` | 4개 application task 생성 및 scheduler 시작 |
-| `vTaskDelayUntil` | Monitor의 고정 1초 release |
-| `xQueueCreate`, `xQueueSend`, `xQueueReceive` | control 명령과 두 TX lane |
-| `vTaskNotifyGiveFromISR`, `ulTaskNotifyTake` | UART byte/버튼 edge ISR 알림 → Task 수신; 알림은 합쳐질 수 있어 ring/현재 GPIO level로 처리 |
-| `xSemaphoreCreateMutex`, `xSemaphoreTake`, `xSemaphoreGive` | LabState 보호, priority inheritance |
-| `uxTaskGetStackHighWaterMark` | tasks 응답, Stack 최소 잔여량 |
-| `xPortGetFreeHeapSize`, `xPortGetMinimumEverFreeHeapSize` | 현재/최소 잔여 RTOS heap |
-| `eTaskGetState`, `uxTaskPriorityGet`, `uxTaskGetNumberOfTasks`, `xTaskGetIdleTaskHandle` | Idle 포함 task 관찰 |
-
-## 시간 및 인터럽트
-
-- Cortex-M4F GCC port, FPU hard-float. HSI 16MHz → PLL 84MHz. SysTick 1000Hz, 32-bit tick. 모든 delay/rate는 `pdMS_TO_TICKS` 사용. tick=ms인 설정을 전제로 `lab_time.h`를 사용합니다.
-- 초기 LED는 OFF. `led auto`는 **즉시 OFF로 초기화**하고 한 period 뒤 처음 ON. `rate`는 현재 시점에서 새 period를 적용해 deadline을 다시 시작합니다.
-- AUTO는 `deadline += (skipped+1)*period` 방식. 늦으면 실제 토글 1회만 하고 지나간 slot을 `missed`로 셉니다. 빠른 catch-up 토글을 만들지 않고 원래 phase를 유지합니다. 명령에 의한 재설정 외에 매번 `now+period`로 늦어지지 않습니다.
-- Monitor는 1초 고정 release, 전체 주기를 놓친 경우 지난 release를 건너뜁니다. 누락된 시간을 가짜 STAT burst로 채우지 않습니다. UART 큐 때문에 생성/수신 시각은 달라질 수 있습니다.
-- uint32 차이로 wraparound를 처리합니다. deadline 비교는 반 주기(약 24.8일) 미만 간격을 전제로 하며 uptime은 약 49.7일에 wrap됩니다. Host는 wrap을 구분하고 뒤로 이동하는 uptime을 reset/discontinuity로 취급합니다.
-- B1 PC13 active-low, 양 edge EXTI. ST [공식 Nucleo BSP](https://github.com/STMicroelectronics/stm32f4xx-nucleo-bsp/blob/main/stm32f4xx_nucleo.c)의 falling press 설정을 참고했습니다. ISR은 알림만 보내고 Control이 실제 level의 50ms 안정화를 검사합니다. 길게 눌러도 1회, **50ms 안정된 해제 이후** 재무장합니다. 샘플 간격/스케줄링에 따라 50ms보다 늦게 확정될 수 있습니다.
-- FreeRTOS가 SysTick/SVC/PendSV를 소유합니다. HAL 1ms timebase는 **TIM5만** 사용하고 별도 측정 타이머로 중복 사용하지 않습니다. ELF에서 각 handler strong symbol 1개 확인.
-- NVIC group4, 4 priority bits. MAX_SYSCALL=5 (`0x50`), USART2/EXTI/TIM5=6, PendSV/SysTick=15. FromISR는 API 허용 우선순위에서만 호출하며 ISR에 blocking API가 없습니다.
-- `configASSERT`, malloc-failed hook, Stack overflow mode2는 인터럽트를 막고 정지합니다. watchdog은 없습니다. HardFault/Task 정지 시 LED OFF나 자동 복구를 보장하지 않습니다.
-
-## UART/TCP protocol
-
-115200 8N1, PA2 TX/PA3 RX, LF 종료 ASCII. CRLF도 허용. UART 입력 최대 **127자(LF 제외)**, 출력 최대 **318자 + LF**(320byte 저장, NUL 포함), Host parser 최대 512자. 부분 수신을 누적합니다. 잘못된 byte/긴 line은 다음 LF까지 버리며 이후 정상 명령을 처리합니다.
-
-```text
-CMD 12 STATUS
-CMD 13 LED ON
-CMD 14 TASKS
-CMD 15 RATE 500
-RSP 12 OK uptime_ms=... led=... app_tasks=4 tasks=5 ...
-RSP 13 OK rate_ms=500
-RSP 14 OK tasks=5 cmd=X,4,... ctrl=B,3,... idle=R,0,... unit=words
-RSP 15 OK rate_ms=500
-EVT button pressed count=3 uptime_ms=12500
-EVT led OFF ON mode=AUTO rate_ms=500 uptime_ms=13000
-EVT config mode=AUTO rate_ms=500 uptime_ms=13000
-STAT uptime_ms=13000 led=ON mode=AUTO ...
-```
-
-숫자/상태는 형식 예시이며 측정 결과가 아닙니다. UART ID는 1..2147483647. 해석 가능한 ID에는 동일 ID로 OK/ERR, 해석 불가능한 frame/ID에는 `RSP 0 ERR ...`. 모든 정상 query는 **RSP 한 line로 완료**합니다. EVT/STAT는 명령 완료가 아닙니다.
-
-CLI도 TCP에서 `CMD <local-id> <command>`를 보냅니다. Monitor는 클라이언트별 local ID를 UART global ID로 바꾸고 RSP를 해당 client의 local ID로 복원합니다. 같은 local ID를 쓰는 두 CLI가 섞이지 않습니다. client당 1개, 내부 요청 테이블 64개(현재 client 8개라 실제 동시 요청은 최대 8개). 요청은 5초 timeout, CLI 대기는 7초. 연결 해제 시 해당 route를 폐기하므로 늦은 RSP는 ORPHAN입니다. 비동기 boot 이벤트 수신 시 pending 요청을 mcu_reset 오류로 종료합니다. 느린 TCP client는 nonblocking send 실패 시 분리하고 다른 client를 유지합니다.
-
-## Timing diagnostics와 10초 테스트
-
-```bash
-# 실제 Host 단조 시계 테스트. MCU 필드는 합성 데이터이며 보드 검증이 아님.
-./build/host-linux/timing_tests
-./build/host-win/timing_tests.exe
-
-# Flash 이후 실제 보드 관찰. 실행 중 다른 WSL CLI에서 led auto/rate 500.
-./build/host-win/monitor.exe --serial COM7 --baud 115200 --duration-ms 15000 | tee build/hw-timing.log
-```
-
-Windows는 `QueryPerformanceCounter`, Linux 테스트는 `CLOCK_MONOTONIC`을 사용합니다. `[STATUS host_ms=...]`/`[EVENT host_ms=...]`는 **PC 수신 시각**, `uptime_ms`는 **MCU 생성 시각**입니다. `[TIMING STATUS/LED]`는 host_elapsed, mcu_elapsed, drift=MCU−Host, interval 평균/min/max, 목표 대비 평균 및 누적 오차를 출력합니다. `window=10s_observed`는 관찰 기간 표시이며 자동 HW PASS가 아닙니다. `EVT config`에서 LED 측정 창을 초기화하므로 명령/주기 변경 전후를 섞지 않습니다.
-
-실물 초기 합격 기준(온도 보정하지 않은 HSI와 UART/Windows 지연을 고려한 실습 기준):
-
-- 같은 설정으로 **Host 수신 시각 기준 10초 이상**; 약 10개 STATUS interval.
-- MCU−Host drift 절댓값 ≤ `max(300ms, host_elapsed×3%)`.
-- 부하 없는 STATUS 수신 간격 평균 970~1030ms, 각 간격 800~1200ms.
-- LED AUTO 평균 간격 오차 ≤ `max(30ms, period×3%)`; MCU EVT와 Host EVT 모두 기록. UART 출력만으로 전기적인 LED 파형 정확성을 인증하지 않음.
-- `missed`, UART errors/drop이 0인지 함께 확인. 부하 테스트는 동일 기준의 만족 여부와 drop/missed를 별도로 기록하며 수신 유실이 있으면 정상 타이밍 PASS로 처리하지 않음.
-
-기준 초과 시 먼저 drop, USB/Windows 지연, HSI 오차, Task 지연을 구분합니다. 측정값이 없으면 PASS를 기입하지 않습니다.
-
-## 수동 Flash 및 하드웨어 체크리스트
-
-**Flash하면 보드의 기존 Equipment Controller 펌웨어가 교체됩니다.** 사용자만 보드 연결을 확인하고 실행합니다. ST-LINK가 WSL에 전달되어 있고 `st-flash`가 설치된 경우:
-
-```bash
-st-flash --reset write /home/kccistc/projects/stm32-freertos-lab/build/Debug/stm32-freertos-lab.bin 0x08000000
-```
-
-Windows ST-LINK를 그대로 사용하려면 설치된 STM32CubeProgrammer CLI를 WSL에서 실행할 수도 있습니다(설치 경로 확인):
+Windows STM32CubeProgrammer를 사용할 때는 아래 명령을 WSL에서 실행할 수 있습니다. 설치 경로는 로컬 환경에 맞춰 확인합니다.
 
 ```bash
 "/mnt/c/Program Files/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI.exe" \
   -c port=SWD -w "$(wslpath -w "$PWD/build/Debug/stm32-freertos-lab.bin")" 0x08000000 -v -rst
 ```
 
-어느 Flash 명령도 이번 작업에서 실행하지 않았습니다. USB 장치를 WSL에 attach하면 Windows COM7 접근이 달라질 수 있으므로 Flash 이후 Windows ST-LINK VCP가 다시 COM7에 있는지 확인하세요.
+Flash 이후 Windows 장치 관리자에서 VCP의 COM 번호를 확인합니다. 실행 예시는 검증 환경의 COM7을 사용합니다.
 
-| Test | 사용자가 보드에서 수행할 순서 | 현재 상태 |
-|---|---|---|
-| 01 Scheduler | Flash/reset → OFF → boot/scheduler EVT → 1초 STAT → tasks에서 4 app/5 total, priorities, 정상 B/R/X 관찰 | HW 미검증 |
-| 02 LED | on/off 눈으로 확인 → auto → rate 500/1000/100/5000 → rate 50 ERR, 상태 불변 | HW 미검증 |
-| 03 Queue | CLI 명령 RSP/EVT 확인; 여러 CLI로 반복 요청 → queue drop/depth 조회 → 부하 중지 후 ping 회복 | Host double queue full/recovery PASS, HW 미검증 |
-| 04 ISR | 한 번 누름, 바운스, 3초 유지, 해제 후 재누름; count와 btnnotify 관찰 | Host debounce PASS, HW 미검증 |
-| 05 Mutex | 여러 CLI status/tasks와 제어 동시 수행; 일관성/stack/heap 관찰 | 소스 및 Host double 확인, 실제 priority inheritance 미검증 |
-| 06 Timing | 위 15초 관찰, 설정 유지 10초 이상 데이터; 부하 없이/있을 때 비교 | Host 시계만 검증, MCU 실측 없음 |
-| 07 Protocol | 정상/오류/긴 입력/부분 전송/포화 후 ping; ORE 강제 주입은 별도 디버거 테스트 | Host parser/router/queue PASS, 실제 UART ORE 미검증 |
-| 08 Bridge | CLI 2개, 종료/재접속, Monitor 종료, COM 단절, 느린 client | Windows mock/TCP 및 COM open/read 검증, 실물 단절 미검증 |
-| 09 Restart | B2 reset → 초기 OFF/rate500/count0; boot 측정 창 reset, CLI 재접속; 비정상 종료 후 재실행 | 새 MCU 펌웨어 재시작 미검증 |
+### Monitor — WSL 터미널
 
-실측 결과를 `IMPLEMENTATION_REPORT.md`에 추가한 뒤 해당 항목만 HW VERIFIED로 변경하세요.
+저장소 루트에서 실행합니다.
 
-## 알려진 한계
+```bash
+./build/host-win/monitor.exe --serial COM7 --baud 115200 --port 19006
+```
 
-- 새 펌웨어는 아직 Flash하지 않았으므로 실제 scheduler/LED/버튼/시간/오류 복구가 증명되지 않았습니다.
-- Host firmware 테스트는 실제 `Dispatch`와 queue/mutex **test double**을 사용합니다. FreeRTOS scheduler, NVIC, UART 전기 신호를 시뮬레이션하지 않습니다.
-- HSI 기반이며 온도에 따른 정밀 시간 보정은 없습니다. Host 수신에는 전송/버퍼/스케줄링 지연이 포함됩니다.
-- EVT/STAT와 혼잡 시 RSP도 유실될 수 있습니다. 자동 재전송/영구 이력/정확히 한 번 실행 보장은 없습니다.
-- HAL polling TX는 최대40ms timeout. Windows COM read/write는 각각20/200ms bound이며 느린 stdout도 Monitor를 지연시킬 수 있습니다. MCU 제어는 Host를 무한 대기하지 않습니다.
-- `tasks`는 순간 관찰이라 READY나 RUNNING 포착을 항상 보장하지 않습니다. fault hook은 정지하고 복구하지 않습니다. watchdog/안전 인증/자동 fail-safe는 범위 밖입니다.
-- reset boot EVT가 유실되면 pending 요청은 timeout으로 정리됩니다. 32bit uptime/reset 판별에는 반 wrap 범위 제한이 있습니다.
-- 공식 HAL flash_ex에서 F411에 쓰이지 않는 Banks 인자 경고 3개가 최초 전체 빌드에 나타났습니다. 자체 소스 최종 빌드는 경고 없이 확인했습니다.
+Monitor가 COM 포트를 단독으로 열고 `127.0.0.1:19006`에서 CLI를 받습니다. 종료는 Ctrl+C입니다.
 
-구체적인 실행 로그, 메모리 사용량, 변경 파일은 [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md)를 참고하세요.
+### CLI — Windows PowerShell
+
+먼저 WSL의 저장소 루트에서 빌드한 두 EXE를 Windows 사용자 디렉터리로 복사합니다.
+
+```bash
+lab_windows_home="$(powershell.exe -NoProfile -Command '$env:USERPROFILE' | tr -d '\r')"
+lab_host_dir="$(wslpath -u "$lab_windows_home")/stm32-lab"
+mkdir -p "$lab_host_dir"
+cp build/host-win/monitor.exe build/host-win/cli.exe "$lab_host_dir/"
+```
+
+PowerShell에서 실행합니다. 같은 명령으로 두 번째 CLI도 열 수 있습니다.
+
+```powershell
+Set-Location "$env:USERPROFILE\stm32-lab"
+.\cli.exe --host 127.0.0.1 --port 19006
+```
+
+### CLI 명령어
+
+| 명령 | 기능 |
+|---|---|
+| `help` / `ping` | 명령 목록 / PONG |
+| `status` | LED·모드·주기·버튼·Task 수·Heap·오류 통계 |
+| `tasks` | Task 상태·우선순위·Stack watermark |
+| `queue` | control/RSP/log 깊이와 drop 통계 |
+| `led on` / `led off` / `led auto` | LD2 수동·자동 제어 |
+| `rate N` | 토글 간격 100~5000ms, 기본 500ms |
+| `exit` | 현재 Host CLI 종료 |
+
+## 소스 구조와 상세 기록
+
+| 경로 | 역할 |
+|---|---|
+| `App/` | Task·명령 처리·공유 시간 로직·애플리케이션 설정 |
+| `Core/` | 보드·인터럽트·HAL timebase·FreeRTOS 설정·Linker Script |
+| `tools/` | Windows Monitor·CLI, 프로토콜, Timing 계산 |
+| `tests/` | Protocol·Timing·Dispatch test double·Windows bridge·CLI 테스트 |
+| `host/`, `cmake/`, `scripts/` | Host CMake, Toolchain, Windows 빌드 |
+| `docs/specs/`, `docs/assets/` | 명세 원문과 실장비 검증 사진 |
+| [IMPLEMENTATION_REPORT.md](IMPLEMENTATION_REPORT.md) | 초기 구현, 수정·회귀 시험, 실장비 검증의 상세 기록 |
+
+## 기술적 한계
+
+- Queue 포화 시 drop과 요청 timeout이 발생할 수 있어, timeout 이후에는 상태 조회로 제어 결과를 확인합니다.
+- Timing 수신값에는 MCU 클럭과 UART·Windows 수신 지연이 함께 반영됩니다.
+- Fault hook은 정지 정책입니다. 자동 복구가 필요한 적용에는 watchdog 등 추가 설계를 고려합니다.

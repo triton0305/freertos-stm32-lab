@@ -1,161 +1,281 @@
-# 구현·검증 결과 — 2026-10-29 (Asia/Seoul)
+# 구현·검증 기록
 
-## 1. 구현 및 수정 완료
+## 현재 결과 — 2026-10-30
 
-기존 초안을 재사용하면서 실제 ARM compile 실패와 설계 결함을 수정했다.
+HELP·Rate 파서와 애플리케이션 설정을 정리한 수정본에서 ARM·Windows 빌드, Linux 3개·Windows 5개 자동 테스트를 통과했습니다. NUCLEO-F411RE에 펌웨어를 기록한 뒤 UART 명령, LED AUTO, 버튼 이벤트와 두 CLI의 교차 제어·조회 동작을 확인했습니다.
 
-- HAL UART의 `DMA_HandleTypeDef` 컴파일 오류: HAL DMA 설정/헤더 의존성 추가. UART DMA 동작을 새로 추가한 것은 아니다.
-- B1 active-high 가정을 active-low로 수정, 양 edge 알림 + Task에서 50ms 안정화, 안정된 해제 전 재입력 금지.
-- AUTO 진입 OFF/첫 deadline 명시, 절대 deadline 유지/늦은 slot 건너뛰기, wrap-safe 공유 시간 로직과 테스트.
-- Monitor priority 2 > polling TX priority 1; Command RX 64byte마다 1ms 양보. Monitor 지연 시 과거 STATUS burst 방지.
-- UART loss 시 unread backlog 및 다음 LF까지 폐기하는 복구 정책; HAL TX timeout 뒤 RX IRQ 재활성화.
-- 최소 heap/protocol error/button notification 통계, Idle task 상태·watermark 추가. TX frame 저장 공간 320byte로 확장.
-- CLI local ID → Monitor global UART ID → 원래 CLI ID 라우팅, wrap collision 회피, slow-client 정리, boot 시 pending request 종료.
-- CLI 수신과 console 입력 분리: 입력 대기 중 Monitor 종료 감지. Win32 Interlocked를 통한 공유 ID 접근.
-- Windows QPC 및 Linux monotonic 10초 테스트, interval 평균/min/max/목표 편차/누적 오차/MCU reset 관찰.
-- 공식 의존성 4개 HEAD/수정 여부 검사, WSL MinGW toolchain과 sudo 없는 로컬 bootstrap script.
+| 항목 | 수정본 결과 |
+|---|---|
+| ARM Debug / Windows Monitor·CLI 빌드 | PASS |
+| Linux / Windows CTest | 3/3 / 5/5 PASS |
+| Rate / Firmware Dispatch·HELP | 31개 사례 / 386 checks |
+| Protocol / Windows bridge / CLI 표시 | 40 / 34 / 6 checks |
+| Flash / 링크 RAM | 32,132 / 36,680 bytes |
+| 보드 조회 Free Heap / Minimum Heap | 16,680 / 16,680 bytes |
+| 보드 기능 확인 | Task 4개+Idle, UART, HELP·Rate, LED ON/OFF/AUTO, 버튼, 두 CLI |
 
-## 2. 변경·추가 파일
+[README](README.md)에는 시스템 구조와 실행 방법을, 아래에는 초기 구현부터 수정본의 시험 근거까지 기록했습니다.
 
-변경:
+## 1. 대상 버전과 시험 기록
 
-- `App/rtos_lab.c`
-- `Core/board.c`, `Core/board.h`, `Core/FreeRTOSConfig.h`, `Core/stm32f4xx_hal_conf.h`
-- `CMakeLists.txt`, `host/CMakeLists.txt`
-- `tools/monitor.c`, `tools/cli.c`, `tools/protocol.c`
-- `tests/test_host.c`
-- `README.md`, `CODEX_HANDOFF.md`, `IMPLEMENTATION_REPORT.md`
+공개 소스 기준은 [`fc304910863ce8ca7e118fd3b41b54d58dd872d4`](https://github.com/triton0305/freertos-stm32-lab/commit/fc304910863ce8ca7e118fd3b41b54d58dd872d4)입니다. 문서·이미지 정리에서는 해당 구현과 테스트·빌드 설정을 유지했습니다.
 
-추가:
+| 날짜 | 기록 | 환경·대상 | 근거 |
+|---|---|---|---|
+| 2026-10-29 | 초기 구현·검증 | ARM GCC 10.3.1, Linux GCC 11.4.0, MinGW GNU 10.0.0 / 초기 빌드 | 최초 `IMPLEMENTATION_REPORT.md`의 실행 결과 요약 |
+| 2026-10-30 | 수정·회귀 검증 | HELP·Rate·설정 중앙화를 반영한 펌웨어와 Windows Host | 수정본 빌드·테스트 결과 기록 |
+| 2026-10-30 | CLI·보드 실습 | NUCLEO-F411RE, ST-LINK VCP COM7, UART 115200 8N1 | [CLI 회귀 검증 사진](docs/assets/cli_regression.png), [두 CLI 사진](docs/assets/two_cli.png), [버튼·Monitor 사진](docs/assets/button_monitor.png) |
+| 2026-10-30 | Timing 측정 | Windows QPC 수신 시각 / 수정본 UART timestamp | 15초 관찰 시험에서 기록한 LED·STATUS 측정 요약 |
+| 2026-10-30 | 보조 소스 검토 | 별도 Linux 환경, GCC 직접 빌드 | Protocol 40·Dispatch 386 checks 및 10초 Timing 시험 통과 기록 |
 
-- `App/lab_time.h`
-- `cmake/mingw-w64.cmake`
-- `scripts/build-windows.sh`
-- `tools/timing.c`, `tools/timing.h`
-- `tests/test_timing.c`, `tests/test_bridge_win.c`, `tests/test_firmware.c`
-- `tests/fakes/FreeRTOS.h`, `tests/fakes/task.h`, `tests/fakes/queue.h`, `tests/fakes/semphr.h`
+초기·수정본의 binary 정보는 각 빌드 기록에 대응합니다. 수정본의 BIN 해시는 확보한 기록에 포함되지 않아 초기 해시를 초기 빌드 절에만 보존했습니다. 원시 `build/*.log`는 당시 로컬 빌드 디렉터리의 기록이며, 이 문서에는 실행 결과 요약과 제공된 사진을 남겼습니다.
 
-기존 linker script, ARM toolchain, preset 및 나머지 헤더는 검토 후 유지했다. 다운로드/산출물/로그는 `build/`에 있다. `cpp-equipment-controller`에는 쓰기 작업을 하지 않았다. 현재 Lab 디렉터리 자체에는 `.git`이 없었으며 commit/push는 수행하지 않았다.
+명세는 [01 · 구현·검증 요구사항](<docs/specs/01_first_spec_(implementation_validation).md>), [02 · 관련 Yocto 이미지 요구사항](<docs/specs/02_second_spec_(yocto_uart_gpio8_image).md>), [03 · 문서 정리 기준](<docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md>)으로 구분했습니다. 01번은 초기 설계 요구사항, 02번은 별도 Raspberry Pi 프로젝트 문서, 03번은 이번 공개 문서 정리 기준입니다.
 
-## 3. 실제 빌드 명령 및 결과
+## 2. 초기 구현·검증 — 2026-10-29
 
-```bash
-cmake --preset Debug
-cmake --build --preset Debug
-arm-none-eabi-size build/Debug/stm32-freertos-lab.elf
-./scripts/build-windows.sh
-cmake -S host -B build/host-linux -G Ninja
-cmake --build build/host-linux
-```
+이 절의 수치와 시험 상태는 초기 빌드 시점의 기록입니다.
 
-- ARM GCC 10.3.1 configure/build/link 성공: **BUILD VERIFIED**.
-- ELF/BIN/MAP 생성. `arm-none-eabi-nm --defined-only ...`로 SVC/PendSV/SysTick/TIM5 strong handler 각각 1개 확인.
-- 공식 source 4개가 명세의 exact commit에 있는 것을 `git rev-parse HEAD`로 확인.
-- MinGW compiler CMake 식별 GNU 10.0.0: Windows `monitor.exe`, `cli.exe`, 모든 테스트 EXE 빌드 성공.
-- Linux GCC 11.4.0: Host 테스트 빌드 성공.
-- 초기 ARM 빌드는 DMA 헤더 누락으로 FAIL했고 소스 수정 후 성공했다. 최초 전체 vendor HAL build에서 unused Banks 경고 3개. 자체 소스 최종 빌드 경고 없음.
-- sudo apt 설치 시도는 비밀번호 요구로 실패했다. 사용자 디렉터리에 apt package를 다운로드/추출해 MinGW 크로스 빌드를 완료했다. 시스템 설치 변경 없음.
-- 잘못된 `FREERTOS_KERNEL_SOURCE_DIR`를 다른 dependency로 지정한 negative configure: exit 1 및 expected/actual commit 메시지 확인 (**예상된 실패, 검증 PASS**).
+### 2.1 구현 중 해결한 문제
 
-로그: [최종 ARM](build/arm-final.log), [Windows build](build/windows-build.log), [Linux build](build/linux-build.log), [pin mismatch](build/pin-negative.log).
+| 문제·설계 항목 | 반영한 내용 |
+|---|---|
+| HAL UART의 `DMA_HandleTypeDef` 컴파일 오류 | HAL DMA 설정·헤더 의존성 추가. 통신은 기존 IRQ RX·polling TX 구성 유지 |
+| B1 입력 극성 | PC13 active-low 적용, 양 edge 알림과 Task의 50ms 안정화, 안정된 해제 후 재무장 |
+| AUTO 시간 처리 | 진입 시 OFF·첫 deadline 정의, 절대 deadline 유지, 지난 slot 건너뛰기, wrap-safe 연산 |
+| UART 송신과 Task 실행 | Monitor 우선순위를 TX보다 높게 설정, Command RX 64byte마다 1ms 양보, 과거 STAT burst 방지 |
+| UART 유실 후 복구 | unread backlog와 다음 LF까지 폐기, HAL TX timeout 뒤 RX IRQ 재활성화 |
+| 진단 통계 | 최소 Heap, protocol·button notification, Idle 상태·watermark, 320byte TX frame |
+| 여러 CLI의 요청 | local ID→global UART ID→원래 local ID 복원, ID wrap·collision 회피 |
+| Host 수명주기 | slow client 분리, boot 시 pending 정리, CLI 입력·수신 분리와 Monitor 종료 감지 |
+| 시간 관찰 | QPC·Linux monotonic 측정, interval 평균/min/max·drift·누적 오차 출력 |
+| 빌드 재현 | 공식 의존성 4개 커밋 고정·변경 검사, WSL MinGW bootstrap |
 
-## 4. 실제 테스트와 PASS/FAIL
+### 2.2 빌드 결과
 
-```bash
-ctest --test-dir build/host-linux -V
-ctest --test-dir build/host-win -V
-./build/host-win/monitor.exe --mock --duration-ms 2500
-printf 'ping\nstatus\nexit\n' | ./build/host-win/cli.exe
-./build/host-win/monitor.exe --serial COM999 --duration-ms 500
-./build/host-win/monitor.exe --serial COM7 --baud 115200 --duration-ms 1500
-```
+ARM ELF/BIN/MAP 생성과 링크를 확인했습니다. ELF에서 SVC/PendSV/SysTick/TIM5 strong handler가 각각 하나씩 정의된 것을 확인했습니다. 공식 의존성 4개의 실제 HEAD와 tracked 수정 여부를 검사했습니다.
 
-Mock Monitor와 CLI는 동시에 별도 process로 실행했다.
+- ARM GCC 10.3.1 configure/build/link 성공.
+- MinGW GNU 10.0.0으로 Monitor·CLI와 Windows 테스트 EXE 빌드 성공.
+- Linux GCC 11.4.0으로 Host 테스트 빌드 성공.
+- 최초 ARM 컴파일의 DMA 헤더 오류는 의존성 수정 후 해결했습니다.
+- 최초 전체 HAL 빌드에서 `flash_ex`의 미사용 Banks 인자 경고 3개가 있었고, 자체 소스 최종 빌드는 경고 없이 확인했습니다.
+- MinGW는 사용자 디렉터리에 Ubuntu 패키지를 추출하는 방식으로도 빌드를 확인했습니다.
+- 잘못된 `FREERTOS_KERNEL_SOURCE_DIR`를 넣었을 때 expected/actual commit을 출력하고 configure가 exit 1로 종료되는 것을 확인했습니다.
 
-| 테스트 | 결과 | 범위 |
+### 2.3 초기 테스트
+
+| 시험 | 초기 결과 | 확인 내용 |
 |---|---|---|
-| Linux CTest | **3/3 PASS** | protocol, monotonic/deadline/debounce, firmware dispatch doubles |
-| Windows CTest via WSL Interop | **4/4 PASS** | 위 3개 + 실제 Winsock TCP/mock UART bridge |
-| Protocol | **29 checks PASS**, 양 플랫폼 | partial framing, invalid ID/byte, overflow/recovery, normalize, clock wrap/skew |
-| Firmware dispatch | **20 checks PASS**, 양 플랫폼 | 실제 Dispatch 코드에 queue/mutex double 연결; control queue full/회복, RSP/log drops, rate 범위, 오류, 상태 |
-| Windows bridge | **30 checks PASS** | 두 client 동일 local ID, 역순 응답, global ID wrap/collision, event 혼합, timeout, reset, long line, 재접속/늦은 RSP 격리, slow client 분리 |
-| 실제 monitor.exe + cli.exe | **PASS** | mock UART PING/PONG, mock STATUS ERR, exit, Monitor 별도 유지 |
-| idle CLI 종료 | **PASS** | FIFO 입력을 열린 채 둔 CLI가 duration Monitor 종료 후 5초 제한 전에 exit 0; 입력 없이 종료 |
-| COM999 | **예상된 실패 PASS** | CreateFile 실패 Win32 error 2, process exit 1 |
-| COM7 open/read | **PASS (Host 연결만)** | Windows COM 독점 open, 기존 펌웨어 ASCII 출력 수신, 자동 duration 종료 |
-| 핀 불일치 | **예상된 실패 PASS** | configure가 다른 commit을 거부 |
+| Linux CTest | 3/3 PASS | Protocol, monotonic·deadline·debounce, Dispatch doubles |
+| Windows CTest / WSL Interop | 4/4 PASS | Linux와 공통 시험 + Winsock TCP/mock UART bridge |
+| Protocol | 29 checks / 양 플랫폼 | 부분 수신, ID·byte 검사, overflow 복구, normalize, wrap·skew |
+| Firmware Dispatch | 20 checks / 양 플랫폼 | Queue full·회복, RSP·Log drop, Rate·상태 |
+| Windows bridge | 30 checks | 두 client의 같은 local ID, 역순 응답, global ID wrap·collision, timeout·reset·재접속·slow client |
+| Monitor·CLI 별도 process | PASS | Mock PING/PONG, mock STATUS 오류, CLI exit 후 Monitor 유지 |
+| Idle CLI의 연결 종료 | PASS | 입력을 기다리는 CLI의 Monitor 종료 감지, 제한 시간 내 exit 0 |
+| COM999 실패 처리 | 예상 실패 확인 | CreateFile Win32 error 2, exit 1 |
+| COM7 열기·수신 | Host 연결 확인 | 당시 보드의 기존 펌웨어 ASCII 데이터 수신 |
+| 의존성 핀 불일치 | 예상 실패 확인 | 다른 커밋을 configure 단계에서 거부 |
 
-**HOST VERIFIED**는 위 범위에만 사용한다. FreeRTOS scheduler/NVIC/UART ORE/물리 debounce를 Host double 테스트로 검증했다고 주장하지 않는다.
+초기 COM7 시험은 `DOOR:OPEN`, `ESTOP:OFF`, `PRESSURE:...`가 출력되던 이전 Equipment Controller 펌웨어를 수신한 기록입니다. 새 Lab 펌웨어의 Flash와 보드 기능 확인은 4절의 수정본 실습 기록으로 이어집니다.
 
-로그: [Linux CTest](build/host-linux-tests.log), [Windows CTest](build/host-win-tests.log), [실제 CLI](build/windows-cli-mock.log), [idle disconnect](build/cli-idle-disconnect.log), [COM 실패](build/windows-com-failure.log), [COM7](build/windows-com7.log).
+### 2.4 초기 메모리와 BIN
 
-COM7에서 관찰한 `DOOR:OPEN`, `ESTOP:OFF`, `PRESSURE:...` 등은 **기존 펌웨어 데이터**다. COM7 read 시험에서는 명령을 보내지 않았고 Flash하지 않았다. 새 Lab의 USART2 통신/HW VERIFIED로 분류하지 않는다.
+| 지표 | 초기 값 |
+|---|---:|
+| Flash | 31,980 bytes / 524,288 bytes (6.10%) |
+| RAM | 36,680 bytes / 131,072 bytes (27.98%) |
+| size text / data / bss | 31,796 / 144 / 36,544 bytes |
+| BIN | 31,980 bytes |
 
-## 5. Flash/RAM
-
-최종 Debug 링크:
-
-| 항목 | 사용량 | 총량 |
-|---|---:|---:|
-| FLASH (linker memory region) | **31,980 bytes (6.10%)** | 524,288 bytes |
-| RAM (linker memory region) | **36,680 bytes (27.98%)** | 131,072 bytes |
-| size text / data / bss | 31,796 / 144 / 36,544 bytes | — |
-| BIN 크기 | **31,980 bytes** | — |
-
-RAM region에는 RTOS heap 배열 32KiB 및 linker의 C heap/MSP reserve가 포함된다. Task stack/queue는 이 RTOS heap에서 동적 할당되므로 실제 free/minimum heap과 Task watermark는 보드 실행 후 조회해야 한다. 이를 아직 실측하지 않았다.
-
-BIN SHA-256:
+초기 BIN SHA-256:
 
 ```text
 03b4d53cc24589770142a632a39e6a4060f87de2615a0bdaa5d1d4d1256d15e6
 ```
 
-## 6. Timing 결과
+RAM region에는 RTOS heap 배열 32KiB와 linker의 C heap·MSP reserve가 포함됩니다. Task stack·Queue는 RTOS heap에서 동적으로 할당합니다.
 
-최종 CTest 로그의 **Host clock + 합성 MCU 데이터** 측정값:
+### 2.5 초기 Host 시간 시험
 
-| 플랫폼 | Host elapsed | 합성 MCU elapsed | MCU−Host drift | 평균 interval | min / max |
+OS 단조 시계로 10초 이상 관찰하고, 1000씩 증가시킨 합성 MCU timestamp를 입력해 계산과 출력 형식을 확인했습니다.
+
+| 플랫폼 | Host 경과 | 합성 MCU 경과 | MCU−Host | 평균 간격 | min / max |
 |---|---:|---:|---:|---:|---:|
-| Linux CLOCK_MONOTONIC | 10000ms | 10000ms | 0ms | 1000.000ms | 1000 / 1000ms |
-| Windows QPC | 10001ms | 10000ms | −1ms | 1000.100ms | 993 / 1014ms |
+| Linux CLOCK_MONOTONIC | 10,000ms | 10,000ms | 0ms | 1000.000ms | 1000 / 1000ms |
+| Windows QPC | 10,001ms | 10,000ms | −1ms | 1000.100ms | 993 / 1014ms |
 
-각 테스트가 해당 OS 단조 시계로 10초 이상 기다렸다. 테스트의 합성 MCU timestamp는 1000씩 증가시킨 입력 데이터이지 보드 시간 측정이 아니다. WSL CTest 자체의 wall-duration은 Windows QPC 측정과 다르게 나타날 수 있으므로 Windows 시험의 관찰 시간은 출력된 QPC delta로 기록한다. 실제 MCU drift/STATUS/LED 값은 **미측정**.
+같은 시험에서 deadline wrap·skipped slot, debounce 재무장·긴 누름, timestamp reset·wrap 구분을 확인했습니다. 보드의 실제 timestamp 비교값은 4.4절에 정리했습니다.
 
-공유 deadline wrap, skipped slot, debounce 재무장, 긴 누름, reset/wrap 구분 테스트 PASS. Hardware acceptance 기준 및 15초 실행 명령은 README에 있으며, **수신 window 표시만으로 HW PASS하지 않는다**.
+## 3. 수정·회귀 검증 — 2026-10-30
 
-## 7. 미검증
+### 3.1 변경 내용
 
-- 새 이미지의 보드 Flash, scheduler 시작/priority 실행/실제 task 상태.
-- LD2 on/off/auto 및 MCU 1000Hz tick의 물리 시간 일치.
-- B1 EXTI/notification/50ms 물리 debounce.
-- 실제 Cortex-M4F mutex priority inheritance, Stack/heap 실측 및 fault hook.
-- UART ORE/ring overflow 실제 주입, 고부하 missed/drop 회복, USB 물리 분리/재연결.
-- 새 펌웨어 reset 초기 상태 및 실제 boot 이벤트.
+| 항목 | 수정 내용 |
+|---|---|
+| HELP | `led_on` 등 잘못된 하드코딩 문법을 실제 `led on`으로 수정 |
+| HELP transport·표시 | UART에서는 단일 RSP, CLI에서는 명령별 줄바꿈. `exit`는 Host CLI 표시 |
+| Rate 파서 | 숫자 형식 오류·uint32 오버플로는 `bad_rate`, 정수 범위 초과는 `rate_range_100_5000` |
+| 설정 중앙화 | `App/app_config.h`로 우선순위·Stack·Queue·버퍼·시간 설정을 이동하고 단위·컴파일 타임 검사 추가 |
+| 회귀 테스트 | Rate 31개 사례, 오류 후 상태 유지·PING/STATUS 회복, HELP 라우팅·표시 및 STAT/EVT 혼합 추가 |
 
-**HW VERIFIED: 없음.** 사용자의 수동 Flash/실장비 관찰 후에만 항목별 갱신한다.
+Task 우선순위, Queue·Stack 크기, Timing·ISR·Mutex 정책 값은 유지했습니다. 커널 설정은 `FreeRTOSConfig.h`, 주변장치는 Board, Windows COM·TCP 옵션은 Host 계층에 남겼습니다.
 
-## 8. Known Limitations
+### 3.2 실행 결과
 
-README의 한계를 적용한다. 특히 watchdog 없음, fault 시 LED 안전 상태 보장 없음, HSI 정밀도/Windows 수신 지연, 큐 포화 시 이벤트/응답 유실, timeout 명령의 실행 여부 불확실성이 있다. Host mock은 scheduler나 물리 UART를 대신하지 않는다. `--mock`은 PING 및 시험용 TIMEOUT만 구현한 테스트 transport로, 실제 보드 기능 시뮬레이터가 아니다.
+| 항목 | 수정본 결과 |
+|---|---|
+| ARM Debug / Windows Monitor·CLI 빌드 | PASS |
+| Linux CTest | 3/3 PASS |
+| Windows CTest | 5/5 PASS |
+| Rate 입력 | 31개 사례 PASS |
+| Firmware Dispatch·HELP | 386 checks PASS |
+| Host Protocol | 40 checks PASS |
+| Windows 다중 CLI bridge | 34 checks PASS |
+| Windows CLI 표시 | 6 checks PASS |
 
-## 9. 사용자 수동 Flash
+Firmware 시험은 실제 `Dispatch`를 포함하고 Queue·Mutex double로 포화·복구·상태를 검사합니다. Windows bridge 시험은 실제 Winsock loopback과 mock UART를 사용합니다. CLI 표시 시험은 실제 출력 함수를 호출해 HELP 줄바꿈과 응답 표시를 검사합니다. fake 헤더는 Host firmware 시험에만 연결하고 ARM 빌드에는 공식 FreeRTOS를 사용했습니다.
 
-**기존 Equipment Controller 펌웨어가 보드에서 교체된다.** 사용자가 연결과 대상 보드를 확인한 뒤 직접 실행:
+추가 시험 최초 실행에서 확인된 Queue 초기화 누락은 테스트 초기화 수정 후 재검증했습니다. 수정 전 소스 사본과 diff를 비교했고 공백 오류를 확인했습니다.
 
-```bash
-st-flash --reset write /home/kccistc/projects/stm32-freertos-lab/build/Debug/stm32-freertos-lab.bin 0x08000000
+별도 Linux 소스 검토에서는 GCC로 Protocol·Firmware·Timing 테스트를 직접 빌드·실행했습니다. Protocol 40 checks, Dispatch 386 checks/Rate 31개와 10초 Timing 시험이 통과했습니다. 이때 10개 간격의 Host 경과는 10,000ms, 평균 1000.000ms, min/max 999/1001ms였습니다. 이 기록은 직접 실행한 세 시험의 결과로 보관하며, CTest 실행 결과와 구분합니다.
+
+### 3.3 메모리 변화
+
+| 지표 | 초기 | 수정본 | 차이 |
+|---|---:|---:|---:|
+| Flash | 31,980 bytes | 32,132 bytes | +152 bytes |
+| RAM | 36,680 bytes | 36,680 bytes | 동일 |
+
+## 4. 수정본 실장비 확인 — 2026-10-30
+
+### 4.1 Flash와 실행 환경
+
+STM32CubeProgrammer로 수정 펌웨어를 기록해 Download Verify와 MCU Software Reset을 확인했습니다. 보드에서 FreeRTOS Task와 UART 통신을 실행했습니다.
+
+- 보드: NUCLEO-F411RE, LD2 PA5, B1 PC13.
+- Monitor: WSL2 Ubuntu 터미널에서 Windows EXE를 Interop으로 실행.
+- CLI: Windows PowerShell, Monitor의 TCP `127.0.0.1:19006`에 연결.
+- 통신: Windows COM7 / ST-LINK VCP / USART2 115200 8N1.
+- 구성: Application Task 4개, Idle 포함 5개, 우선순위 4/3/2/1/0.
+
+### 4.2 수정본 CLI·펌웨어 회귀 검증
+
+HELP·PING·상태 조회 후 오류 Rate 여섯 개와 정상 Rate·LED 제어를 순서대로 입력했습니다. 사진에 표시된 HELP는 명령마다 줄을 바꾸고 실제 CLI 문법을 유지합니다.
+
+| 입력 | 응답·관찰 |
+|---|---|
+| `rate 500abc`, `rate 500.1`, `rate 100.1`, `rate abc` | `ERR bad_rate` |
+| `rate 99`, `rate 5001` | `ERR rate_range_100_5000` |
+| `rate 100`, `led auto`, `status` | `mode=AUTO rate=100` |
+| `rate 500`, `status` | `mode=AUTO rate=500` |
+| `led off`, `status` | `led=OFF mode=OFF` |
+| `led on`, `status` | `led=ON mode=ON` |
+| `led auto`, `status`, `queue` | AUTO 상태 조회, Queue drop 0 |
+
+오류 여섯 개를 입력한 뒤 `protoerr`가 0에서 6으로 증가했고, 이어진 정상 제어·STATUS 조회가 처리됐습니다. 사진의 PING은 오류 입력 전에 수행한 통신 확인입니다. 오류 후 PING/STATUS 회복은 자동 회귀 시험과 실습 요약에도 기록했습니다.
+
+사진 속 첫 Task 조회는 `cmd=X,4,145 ctrl=B,3,383 mon=B,2,287 tx=B,1,386 idle=R,0,108`입니다. 마지막 값은 각 Task의 최소 잔여 Stack words입니다. 당시 Free Heap과 Minimum Heap은 모두 16,680 bytes였습니다.
+
+![수정본 CLI·펌웨어 회귀 검증](docs/assets/cli_regression.png)
+
+전체 입력 순서:
+
+```text
+help
+ping
+status
+tasks
+queue
+rate 500abc
+rate 500.1
+rate 100.1
+rate abc
+rate 99
+rate 5001
+rate 100
+led auto
+status
+rate 500
+status
+led off
+status
+led on
+status
+led auto
+status
+queue
 ```
 
-WSL ST-LINK USB 전달/도구 설치가 필요하다. Windows CubeProgrammer CLI를 WSL에서 실행하는 대안은 README에 있다. 둘 다 자동 실행하지 않았다.
+### 4.3 두 CLI와 버튼 이벤트
 
-## 10. 실장비 테스트 순서
+[두 CLI 사진](docs/assets/two_cli.png)에서는 두 PowerShell 세션의 PONG과 각각의 조회를 확인했습니다. 위쪽 CLI의 `led off` 이후 아래쪽 CLI의 STATUS에도 `led=OFF mode=OFF`가 반영됐습니다. 사진의 상태는 `buttons=3 btnnotify=8`, UART RX/TX 오류·drop 0입니다.
 
-1. 사용자 Flash/reset → 초기 OFF, boot/scheduler 이벤트, 4 application/5 total tasks 확인.
-2. WSL 두 터미널에서 Monitor(COM7) 및 CLI 실행 → ping/status/tasks/queue.
-3. LED ON/OFF/AUTO, rate 100/500/1000/5000 및 rate50 ERR.
-4. 설정을 고정한 15초 기록 → 10초 이상 STATUS/LED QPC↔MCU 비교 및 README 허용오차 판정.
-5. B1 한 번/바운스/3초 유지/해제/재누름 → count 및 btnnotify 확인.
-6. 두 CLI 및 부하 → queue/drop/stack/heap 조회, 부하 중단 후 정상 명령 회복.
-7. invalid/partial/overlong 입력과 오류 회복, 필요시 디버거로 UART ORE 주입.
-8. CLI exit/reconnect, Monitor 종료, USB 단절/재연결, MCU B2 reset 후 초기 상태.
-9. 각 항목의 실제 로그/수치를 추가하고 관찰된 항목만 HW VERIFIED로 변경.
+[버튼·Monitor 사진](docs/assets/button_monitor.png)에서는 `buttons=6` 상태에서 버튼 이벤트 count 7과 8을 수신하고 STATUS가 7, 8로 갱신됐습니다. 이 장면의 `rxerr`, `drops`, `missed`는 0입니다. 화면의 Timing은 3개 간격·Host 2,954ms의 관찰 창입니다.
+
+별도 버튼 실습 기록에는 `buttons` 0→1→2와 `btnnotify` 0→2→6이 남아 있습니다. `buttons`는 debounce를 거쳐 확정된 입력 수, `btnnotify`는 누적 ISR 알림 수로 구분했습니다. 소스는 양 edge EXTI와 50ms 안정화·해제 후 재무장을 사용합니다.
+
+### 4.4 LED·STATUS Timing
+
+LED AUTO 500ms 설정과 STATUS 1000ms 주기를 각각 고정한 상태에서 Windows QPC와 프레임의 MCU timestamp를 비교했습니다. 아래 값은 별도 15초 관찰 실습의 측정 요약입니다.
+
+| 대상 | 설정 간격 | Host 평균 | 간격 수 | Host 경과 | MCU 경과 | MCU−Host |
+|---|---:|---:|---:|---:|---:|---:|
+| LED AUTO 이벤트 | 500ms | 494.200ms | 30 | 14,826ms | 15,000ms | +174ms |
+| STATUS | 1000ms | 989.786ms | 14 | 13,857ms | 14,000ms | +143ms |
+
+`host_elapsed_ms`는 QPC 기반 수신 시각 차이, `mcu_elapsed_ms`는 프레임 timestamp 차이입니다. `drift_ms`는 MCU−Host이고 평균 간격은 Host 경과/간격 수입니다. 두 시간 기준에서 약 1% 차이를 관찰했고 원인은 별도 분석 과제로 남겼습니다. 버튼·Monitor 사진의 짧은 관찰 창과 이 측정 표는 서로 다른 기록입니다.
+
+초기 실습에서는 동일 설정으로 Host 10초 이상, drift 절댓값 `max(300ms, Host 경과×3%)`, STATUS 평균 970~1030ms·각 간격 800~1200ms, LED 평균 오차 `max(30ms, 설정 간격×3%)`를 관찰 기준으로 정했습니다. 위 요약은 경과·평균·간격 수를 보존하며 개별 min/max 값은 제공된 원시 기록 확보 후 추가할 수 있습니다.
+
+영상에서는 AUTO 토글 간격을 1000→500→100ms로 변경했습니다.
+
+▶ [전체 동작 영상 — YouTube](https://youtu.be/3qcbrseBkAc)
+
+## 5. 재현과 진단
+
+빌드·Flash·Monitor·PowerShell CLI 실행의 기본 절차는 [README](README.md#빌드실행)에 모았습니다. 커널·의존성 핀은 현재 CMake 설정을 따릅니다.
+
+보드의 동일 설정 Timing을 다시 기록할 때는 CLI에서 `rate 500`, `led auto`를 설정한 뒤 WSL Monitor를 15초 실행합니다. Monitor를 새로 실행하기 전 기존 프로세스를 종료해 COM7을 해제합니다.
+
+```bash
+./build/host-win/monitor.exe --serial COM7 --baud 115200 --duration-ms 15000 | tee build/hw-timing.log
+```
+
+LED 측정 창은 `EVT config` 또는 rate 변경으로 초기화됩니다. 따라서 실측 구간 중에는 설정을 유지하고 STATUS/LED의 간격 수, elapsed, 평균/min/max, drift와 오류·drop·missed를 함께 기록합니다.
+
+| 진단 지표 | 의미 |
+|---|---|
+| `jitter_ms` | Monitor의 실제 실행 tick과 예정 release tick 차이 |
+| `missed` | AUTO에서 건너뛴 토글 deadline 수 |
+| `protoerr` | ERR 응답 생성 횟수 |
+| `rxerr` / `rxdrop` / `txerr` | UART 수신 오류 / ring overflow / 송신 실패 |
+| `cmddrop` / `rspdrop` / `logdrop` | 각 Queue의 enqueue 실패·드롭 |
+| `heap` / `minheap` | 현재 / 최소 잔여 RTOS Heap bytes |
+| `unit=words` | Task Stack watermark 단위; bytes 환산은 ×4 |
+
+진단 통계는 각 조회 시점의 관측값입니다. `status`의 `drops`는 세 Queue drop 합계이고, 주기 STAT의 `drops`는 여기에 ring overflow를 더합니다. 원인 확인에는 `queue`와 UART 통계를 함께 사용합니다.
+
+## 6. 기술적 제약과 추가 검증 과제
+
+### 설계상 제약
+
+- RSP는 Log보다 먼저 선택하고 포화 시 유한 시간만 대기합니다. 응답 timeout 이후에는 STATUS로 제어 결과를 확인합니다.
+- MCU는 HSI 기반 클럭을 사용하고, Host 수신값에는 UART·USB·Windows·stdout 처리 지연이 반영됩니다.
+- Fault hook은 인터럽트를 막고 정지합니다. 자동 복구가 필요한 환경에서는 watchdog과 출력 정책을 추가 설계합니다.
+- 32-bit tick은 약 49.7일에 순환하고 deadline·reset 판정은 반 wrap 범위의 시간 차이를 전제로 합니다.
+- Mock transport는 PING과 시험용 TIMEOUT을 제공하며, Host doubles는 Dispatch와 시간·프로토콜 로직 검증에 사용합니다.
+
+### 추가 검증 과제
+
+| 항목 | 다음 확인 내용 |
+|---|---|
+| Mutex Priority Inheritance | 강제 경합 상황의 Task 우선순위 변화 계측 |
+| Queue Full | 보드에서 포화 주입, drop·응답 및 부하 제거 후 복구 |
+| UART 장애 | ORE 강제 주입, ring overflow, USB 단절·재연결 |
+| 장시간 실행 | 지속 부하의 Task·Heap·Stack·Timing 추적 |
+| GPIO 파형 | 외부 계측기로 LED 전환 간격·지터 측정 |
+| 재시작·Fault | B2 reset 초기 상태, fault·watchdog 복구 정책 |
+
+현재 문서의 보드 성과는 4절의 기능 실습과 Timing 기록을 중심으로 정리했습니다.
