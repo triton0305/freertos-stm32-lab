@@ -24,8 +24,6 @@ STM32F411RE에서 FreeRTOS 기반 LED 제어와 버튼 입력을 구현했습니
 
 ## DEMO
 
-<img width="654" height="368" alt="demo" src="https://github.com/user-attachments/assets/43e9ee4d-6a2f-404c-83f8-e3eae0964ad2" />
-
 AUTO 모드에서 토글 간격을 **1000 → 500 → 100ms**로 변경했습니다. `rate`는 LED가 ON↔OFF로 전환되는 간격이며, 1000ms 설정의 ON/OFF 한 주기는 2000ms입니다.
 
 ▶ [전체 동작 영상 — YouTube](https://youtu.be/3qcbrseBkAc)
