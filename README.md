@@ -9,7 +9,7 @@ STM32F411RE에서 FreeRTOS 기반 LED 제어와 버튼 입력을 구현했습니
 | 문서 | 내용 |
 |---|---|
 | [01 · 구현·검증 명세](<docs/specs/01_first_spec_(implementation_validation).md>) | 초기 펌웨어·Host 구현 요구사항과 검증 기준 |
-| [02 · 관련 Yocto 이미지 명세](<docs/specs/02_second_spec_(yocto_uart_gpio8_image).md>) | 별도 Raspberry Pi 프로젝트의 UART·GPIO 이미지 통합 요구사항 |
+| [02 · 리팩터링·회귀 검증 명세](<docs/specs/02_second_spec_(refactoring_regression).md>) | HELP·Rate 수정, 설정 중앙화와 회귀 검증 요구사항 |
 | [03 · 포트폴리오 정리 명세](<docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md>) | README, 검증 기록, 시연 자료 및 GitHub 정리 기준 |
 
 명세 원문과 현재 구현·검증 결과를 함께 보관했습니다. 현재 상태는 아래 본문과 [구현·검증 기록](IMPLEMENTATION_REPORT.md)에 정리했습니다.

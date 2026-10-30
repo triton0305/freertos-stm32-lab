@@ -30,7 +30,7 @@ HELP·Rate 파서와 애플리케이션 설정을 정리한 수정본에서 ARM�
 
 초기·수정본의 binary 정보는 각 빌드 기록에 대응합니다. 수정본의 BIN 해시는 확보한 기록에 포함되지 않아 초기 해시를 초기 빌드 절에만 보존했습니다. 원시 `build/*.log`는 당시 로컬 빌드 디렉터리의 기록이며, 이 문서에는 실행 결과 요약과 제공된 사진을 남겼습니다.
 
-명세는 [01 · 구현·검증 요구사항](<docs/specs/01_first_spec_(implementation_validation).md>), [02 · 관련 Yocto 이미지 요구사항](<docs/specs/02_second_spec_(yocto_uart_gpio8_image).md>), [03 · 문서 정리 기준](<docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md>)으로 구분했습니다. 01번은 초기 설계 요구사항, 02번은 별도 Raspberry Pi 프로젝트 문서, 03번은 이번 공개 문서 정리 기준입니다.
+명세는 [01 · 구현·검증 요구사항](<docs/specs/01_first_spec_(implementation_validation).md>), [02 · 리팩터링·회귀 검증 요구사항](<docs/specs/02_second_spec_(refactoring_regression).md>), [03 · 문서 정리 기준](<docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md>)으로 구분했습니다. 01번은 초기 설계 요구사항, 02번은 HELP·Rate 수정과 설정 중앙화·회귀 검증 요구사항, 03번은 이번 공개 문서 정리 기준입니다.
 
 ## 2. 초기 구현·검증 — 2026-10-29
 

@@ -40,7 +40,7 @@
 - Task Priority, Stack, Queue, Mutex, ISR, Timing 정책
 - CMake, Toolchain, Linker Script, Build Script, Preset
 - 공식 의존성 버전과 커밋 핀
-- 기존 Equipment Controller 및 Yocto 등 다른 저장소
+- 기존 Equipment Controller 등 다른 저장소
 
 소스 결함이 발견되면 위치, 재현 조건, 영향을 채팅 최종 보고에 남긴다. 문서에 맞춰 소스를 고치지 않는다. STM32 Flash나 실물 장비 제어, 소스 재생성은 수행하지 않는다. 문서 작업을 위한 불필요한 재빌드·테스트 반복도 수행하지 않는다.
 
@@ -77,12 +77,12 @@ GitHub 플러그인으로 충분한 작업은 플러그인을 우선 사용한�
 | YouTube 시연에 입력한 명령어 사진 | 추가하지 않음 | README에는 설정 순서를 텍스트로 설명 |
 | 사용자 GIF | `docs/assets/auto_demo.gif`를 권장 | README 실장비 시연 절; 사용자가 올릴 예정 |
 | 01번 명세 | `docs/specs/01_first_spec_(implementation_validation).md` | 초기 구현·검증 요구사항 원문 |
-| 02번 명세 | `docs/specs/02_second_spec_(yocto_uart_gpio8_image).md` | 관련 Yocto 이미지 구현 명세 원문 |
+| 02번 명세 | `docs/specs/02_second_spec_(refactoring_regression).md` | 버그 수정·설정 중앙화·회귀 검증 명세 원문 |
 | 이 03번 명세 | `docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md` | 포트폴리오 문서·자료 정리 기준 |
 
 ### 자료 처리 원칙
 
-- 명세 세 개를 전부 보존한다. 02번은 관련 Yocto 문서라는 역할을 표시하고 STM32 펌웨어 구성요소처럼 설명하지 않는다.
+- 명세 세 개를 전부 보존한다. 01번은 초기 구현·검증 요구사항, 02번은 HELP·Rate 수정과 설정 중앙화·회귀 검증 요구사항, 03번은 포트폴리오 문서 정리 기준으로 구분한다.
 - 01·02번의 요구사항을 구현 완료 증거로 취급하지 않는다. 03번은 문서 정리 지시서라는 역할로 소개한다.
 - 01·02번은 제공된 내용과 제목을 보존한다. 명백한 Markdown 서식 오류와 링크 경로만 필요한 만큼 교정한다. 임의로 요약·재작성하지 않는다.
 - 03번은 이번에 제공된 최신 실행 명세를 그대로 사용한다. 본문에서 지시한 내용을 이전 버전으로 되돌리지 않는다.
@@ -117,7 +117,7 @@ GitHub 플러그인으로 충분한 작업은 플러그인을 우선 사용한�
 | 표시 제목 | README에서 연결할 경로 | 설명 |
 |---|---|---|
 | 01 · 구현·검증 명세 | `docs/specs/01_first_spec_(implementation_validation).md` | 초기 구현 요구사항과 검증 기준 |
-| 02 · 관련 Yocto 이미지 명세 | `docs/specs/02_second_spec_(yocto_uart_gpio8_image).md` | UART·GPIO 이미지 관련 요구사항 |
+| 02 · 리팩터링·회귀 검증 명세 | `docs/specs/02_second_spec_(refactoring_regression).md` | HELP·Rate 수정, 설정 중앙화와 회귀 검증 요구사항 |
 | 03 · 포트폴리오 정리 명세 | `docs/specs/03_third_spec_(STM32_FreeRTOS_GitHub_Final).md` | 문서 구성과 GitHub 정리 기준 |
 
 실제 Markdown에서는 세 행 모두 클릭 가능한 상대경로 링크로 작성한다. 괄호가 포함된 파일명은 GitHub Markdown에서 링크가 정상 해석되도록 대상 경로를 `<...>`로 감싼다. 연결된 파일이 실제 존재하는지 검사한다.
